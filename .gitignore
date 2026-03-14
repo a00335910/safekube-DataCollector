@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+data/dataset/bundles/
+data/dataset/alibaba/
+logs/
+*.log
+.claude/
+.env
+checkpoints/
+*.pt
+*.bin
+*.safetensors

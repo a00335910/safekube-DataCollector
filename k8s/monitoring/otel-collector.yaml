@@ -1,0 +1,149 @@
+###############################################################################
+# OpenTelemetry Collector — deployed in staging namespace
+#
+# Architecture:
+#   Online Boutique pods
+#     → OTLP gRPC (http://opentelemetry-collector:4317, same namespace)
+#     → OTel Collector (receives, batches, forwards)
+#     → OTLP gRPC (jaeger.monitoring:4317, insecure, cross-namespace)
+#     → Jaeger all-in-one
+#
+# Why in staging: simplest DNS for Online Boutique services.
+# The Collector handles TLS negotiation explicitly so we can set insecure=true
+# when talking to Jaeger, avoiding the silent TLS failure that happens when
+# SDK clients try to connect directly with default TLS settings.
+###############################################################################
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+  namespace: staging
+  labels:
+    app: opentelemetry-collector
+data:
+  config.yaml: |
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133
+
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+
+    processors:
+      # Prevent OOM by dropping spans if memory is high
+      memory_limiter:
+        check_interval: 5s
+        limit_mib: 256
+        spike_limit_mib: 64
+
+      # Batch spans before forwarding — reduces Jaeger write pressure
+      batch:
+        timeout: 5s
+        send_batch_size: 512
+
+    exporters:
+      # Forward to Jaeger all-in-one in monitoring namespace via OTLP gRPC
+      # insecure: true is critical — Jaeger has no TLS in this setup
+      otlp/jaeger:
+        endpoint: jaeger.monitoring:4317
+        tls:
+          insecure: true
+
+      # Debug exporter — logs span count to collector stdout (useful for testing)
+      debug:
+        verbosity: basic
+        sampling_initial: 5
+        sampling_thereafter: 100
+
+    service:
+      extensions: [health_check]
+      pipelines:
+        traces:
+          receivers:  [otlp]
+          processors: [memory_limiter, batch]
+          exporters:  [otlp/jaeger, debug]
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opentelemetry-collector
+  namespace: staging
+  labels:
+    app: opentelemetry-collector
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: opentelemetry-collector
+  template:
+    metadata:
+      labels:
+        app: opentelemetry-collector
+    spec:
+      containers:
+        - name: collector
+          image: otel/opentelemetry-collector-contrib:0.96.0
+          args: ["--config=/conf/config.yaml"]
+          ports:
+            - name: otlp-grpc
+              containerPort: 4317
+              protocol: TCP
+            - name: otlp-http
+              containerPort: 4318
+              protocol: TCP
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 384Mi
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 13133        # OTel Collector health check extension default port
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 13133
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          volumeMounts:
+            - name: config
+              mountPath: /conf
+      volumes:
+        - name: config
+          configMap:
+            name: otel-collector-config
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: opentelemetry-collector
+  namespace: staging
+  labels:
+    app: opentelemetry-collector
+spec:
+  selector:
+    app: opentelemetry-collector
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+      protocol: TCP
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
+      protocol: TCP
+  type: ClusterIP

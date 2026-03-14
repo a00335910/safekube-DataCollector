@@ -1,0 +1,9 @@
+chaosDaemon:
+  runtime: containerd
+  socketPath: /run/containerd/containerd.sock
+
+dashboard:
+  create: true
+
+controllerManager:
+  replicaCount: 1

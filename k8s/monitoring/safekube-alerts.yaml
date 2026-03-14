@@ -1,0 +1,551 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: safekube-alerts
+  namespace: monitoring
+  labels:
+    release: prometheus-stack
+    app: safekube-remediate
+    role: alert-rules
+spec:
+  groups:
+
+    # ────────────────────────────────────────────────────────────────
+    # GROUP 1 — Pod-Level Faults
+    # ────────────────────────────────────────────────────────────────
+    - name: safekube.pod.faults
+      rules:
+
+        # 1. OOMKilled
+        - alert: SafeKubeOOMKilled
+          expr: |
+            kube_pod_container_status_last_terminated_reason{
+              reason="OOMKilled",
+              namespace="staging"
+            } == 1
+          for: 0m
+          labels:
+            severity: critical
+            fault_type: oomkilled
+          annotations:
+            summary: >-
+              OOMKilled: {{ $labels.namespace }}/{{ $labels.pod }}
+              (container: {{ $labels.container }})
+            description: >-
+              Container {{ $labels.container }} in pod {{ $labels.pod }}
+              (namespace: {{ $labels.namespace }}) was terminated by the kernel
+              OOM killer. The container exceeded its memory limit.
+              Action: increase memory limit or fix memory leak.
+
+        # 2. CrashLoopBackOff — more than 3 restarts in 10 minutes
+        - alert: SafeKubeCrashLoopBackOff
+          expr: |
+            increase(
+              kube_pod_container_status_restarts_total{
+                namespace="staging"
+              }[10m]
+            ) > 3
+          for: 0m
+          labels:
+            severity: critical
+            fault_type: crashloop_backoff
+          annotations:
+            summary: >-
+              CrashLoopBackOff: {{ $labels.namespace }}/{{ $labels.pod }}
+              (container: {{ $labels.container }})
+            description: >-
+              Container {{ $labels.container }} in pod {{ $labels.pod }}
+              has restarted {{ $value | printf "%.0f" }} times in the last
+              10 minutes. Likely cause: application crash, bad config,
+              or missing dependency.
+
+        # 3. ImagePullBackOff / ErrImagePull
+        - alert: SafeKubeImagePullBackOff
+          expr: |
+            kube_pod_container_status_waiting_reason{
+              reason=~"ImagePullBackOff|ErrImagePull",
+              namespace="staging"
+            } == 1
+          for: 0m
+          labels:
+            severity: warning
+            fault_type: image_pull_backoff
+          annotations:
+            summary: >-
+              ImagePullBackOff: {{ $labels.namespace }}/{{ $labels.pod }}
+              (container: {{ $labels.container }})
+            description: >-
+              Container {{ $labels.container }} in pod {{ $labels.pod }}
+              is unable to pull its image (reason: {{ $labels.reason }}).
+              Check image tag, registry credentials, and network access
+              to the registry.
+
+        # 4. Readiness Probe Failure — pod not ready for > 2 minutes
+        - alert: SafeKubeReadinessProbeFailure
+          expr: |
+            kube_pod_status_ready{
+              condition="false",
+              namespace="staging"
+            } == 1
+            and on (namespace, pod)
+            kube_pod_status_phase{
+              phase="Running",
+              namespace="staging"
+            } == 1
+          for: 2m
+          labels:
+            severity: warning
+            fault_type: readiness_probe_fail
+          annotations:
+            summary: >-
+              Readiness probe failing: {{ $labels.namespace }}/{{ $labels.pod }}
+            description: >-
+              Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} has
+              been in a not-ready state for more than 2 minutes while in
+              Running phase. Readiness probe is likely failing.
+              Check application health endpoint and startup time.
+
+        # 5. Liveness Probe Failure — container terminated with Error (not OOM)
+        - alert: SafeKubeLivenessProbeFailure
+          expr: |
+            (
+              kube_pod_container_status_last_terminated_reason{
+                reason="Error",
+                namespace="staging"
+              } == 1
+            )
+            unless on (namespace, pod, container)
+            (
+              kube_pod_container_status_last_terminated_reason{
+                reason="OOMKilled",
+                namespace="staging"
+              } == 1
+            )
+          for: 0m
+          labels:
+            severity: warning
+            fault_type: liveness_probe_fail
+          annotations:
+            summary: >-
+              Liveness probe failure: {{ $labels.namespace }}/{{ $labels.pod }}
+              (container: {{ $labels.container }})
+            description: >-
+              Container {{ $labels.container }} in pod {{ $labels.pod }} was
+              terminated with reason=Error (not OOMKilled), indicating the
+              liveness probe killed it. Check the liveness probe endpoint,
+              timeout settings, and application responsiveness.
+
+        # 6. Startup Probe Failure
+        - alert: SafeKubeStartupProbeFailure
+          expr: |
+            kube_pod_container_status_waiting_reason{
+              reason=~"StartError|StartupError|RunContainerError",
+              namespace="staging"
+            } == 1
+          for: 0m
+          labels:
+            severity: warning
+            fault_type: startup_probe_fail
+          annotations:
+            summary: >-
+              Startup probe failure: {{ $labels.namespace }}/{{ $labels.pod }}
+              (container: {{ $labels.container }})
+            description: >-
+              Container {{ $labels.container }} in pod {{ $labels.pod }} is
+              stuck in waiting state (reason: {{ $labels.reason }}), indicating
+              the startup probe is failing or the container cannot start.
+              Check initialisation commands and startup probe configuration.
+
+        # 7. Container CreateError
+        - alert: SafeKubeContainerCreateError
+          expr: |
+            kube_pod_container_status_waiting_reason{
+              reason=~"CreateContainerError|CreateContainerConfigError",
+              namespace="staging"
+            } == 1
+          for: 0m
+          labels:
+            severity: warning
+            fault_type: container_create_error
+          annotations:
+            summary: >-
+              Container create error: {{ $labels.namespace }}/{{ $labels.pod }}
+              (container: {{ $labels.container }})
+            description: >-
+              Container {{ $labels.container }} in pod {{ $labels.pod }} is
+              stuck in a CreateContainerError state. Likely cause: bad
+              environment variable reference, missing ConfigMap/Secret, or
+              invalid image entrypoint.
+
+    # ────────────────────────────────────────────────────────────────
+    # GROUP 2 — Resource Faults
+    # ────────────────────────────────────────────────────────────────
+    - name: safekube.resource.faults
+      rules:
+
+        # 8. High Memory Usage — pre-OOM warning > 90% of limit for 2m
+        - alert: SafeKubeHighMemoryUsage
+          expr: |
+            (
+              container_memory_working_set_bytes{
+                namespace="staging",
+                container!="",
+                container!="POD"
+              }
+              /
+              container_spec_memory_limit_bytes{
+                namespace="staging",
+                container!="",
+                container!="POD"
+              }
+            ) > 0.90
+            and
+            container_spec_memory_limit_bytes{
+              namespace="staging",
+              container!="",
+              container!="POD"
+            } > 0
+          for: 2m
+          labels:
+            severity: warning
+            fault_type: high_memory_usage
+          annotations:
+            summary: >-
+              High memory usage (>90% limit): {{ $labels.namespace }}/{{ $labels.pod }}
+              (container: {{ $labels.container }})
+            description: >-
+              Container {{ $labels.container }} in pod {{ $labels.pod }} is
+              using {{ $value | humanizePercentage }} of its memory limit for
+              over 2 minutes. OOMKill is imminent. Consider increasing the
+              memory limit or investigating a memory leak.
+
+        # 9. CPU Throttling — > 80% throttled periods for 3 minutes
+        - alert: SafeKubeCPUThrottling
+          expr: |
+            (
+              rate(
+                container_cpu_cfs_throttled_periods_total{
+                  namespace="staging",
+                  container!="",
+                  container!="POD"
+                }[5m]
+              )
+              /
+              rate(
+                container_cpu_cfs_periods_total{
+                  namespace="staging",
+                  container!="",
+                  container!="POD"
+                }[5m]
+              )
+            ) > 0.80
+          for: 3m
+          labels:
+            severity: warning
+            fault_type: cpu_throttling
+          annotations:
+            summary: >-
+              CPU throttling (>80%): {{ $labels.namespace }}/{{ $labels.pod }}
+              (container: {{ $labels.container }})
+            description: >-
+              Container {{ $labels.container }} in pod {{ $labels.pod }} is
+              being CPU-throttled {{ $value | humanizePercentage }} of the time
+              over the last 5 minutes. This causes latency spikes.
+              Consider increasing the CPU limit.
+
+        # 10. Ephemeral Storage Pressure — container using >90% of its fs limit
+        - alert: SafeKubeEphemeralStoragePressure
+          expr: |
+            (
+              container_fs_usage_bytes{
+                namespace="staging",
+                container!="",
+                container!="POD"
+              }
+              /
+              container_fs_limit_bytes{
+                namespace="staging",
+                container!="",
+                container!="POD"
+              }
+            ) > 0.90
+            and
+            container_fs_limit_bytes{
+              namespace="staging",
+              container!="",
+              container!="POD"
+            } > 0
+          for: 2m
+          labels:
+            severity: warning
+            fault_type: ephemeral_storage_pressure
+          annotations:
+            summary: >-
+              Ephemeral storage >90%: {{ $labels.namespace }}/{{ $labels.pod }}
+              (container: {{ $labels.container }})
+            description: >-
+              Container {{ $labels.container }} in pod {{ $labels.pod }} is
+              using {{ $value | humanizePercentage }} of its ephemeral storage
+              limit. Pod eviction is imminent if usage reaches 100%.
+
+        # 11. Resource Quota Exceeded — namespace quota usage > 95%
+        - alert: SafeKubeResourceQuotaExceeded
+          expr: |
+            (
+              max by (namespace, resource) (
+                kube_resourcequota{
+                  namespace="staging",
+                  type="used"
+                }
+              )
+              /
+              max by (namespace, resource) (
+                kube_resourcequota{
+                  namespace="staging",
+                  type="hard"
+                }
+              )
+            ) > 0.95
+          for: 0m
+          labels:
+            severity: warning
+            fault_type: resource_quota_exceeded
+          annotations:
+            summary: >-
+              Resource quota >95% used: {{ $labels.namespace }}
+              (resource: {{ $labels.resource }})
+            description: >-
+              Namespace {{ $labels.namespace }} is using
+              {{ $value | humanizePercentage }} of its {{ $labels.resource }}
+              quota. New pods or deployments will be blocked when 100% is
+              reached. Consider raising the quota or scaling down workloads.
+
+    # ────────────────────────────────────────────────────────────────
+    # GROUP 3 — Node-Level Faults
+    # ────────────────────────────────────────────────────────────────
+    - name: safekube.node.faults
+      rules:
+
+        # 12. Node NotReady
+        - alert: SafeKubeNodeNotReady
+          expr: |
+            kube_node_status_condition{
+              condition="Ready",
+              status="true"
+            } == 0
+          for: 1m
+          labels:
+            severity: critical
+            fault_type: node_not_ready
+          annotations:
+            summary: >-
+              Node not ready: {{ $labels.node }}
+            description: >-
+              Node {{ $labels.node }} has been in a NotReady state for more
+              than 1 minute. Pods scheduled on this node may be evicted.
+              Check kubelet logs and node conditions.
+
+        # 13. Node Disk Pressure
+        - alert: SafeKubeNodeDiskPressure
+          expr: |
+            kube_node_status_condition{
+              condition="DiskPressure",
+              status="true"
+            } == 1
+          for: 0m
+          labels:
+            severity: critical
+            fault_type: node_disk_pressure
+          annotations:
+            summary: >-
+              Node disk pressure: {{ $labels.node }}
+            description: >-
+              Node {{ $labels.node }} is reporting DiskPressure.
+              The kubelet will evict pods and stop scheduling new ones.
+              Free disk space immediately to restore cluster health.
+
+        # 14. Node Memory Pressure
+        - alert: SafeKubeNodeMemoryPressure
+          expr: |
+            kube_node_status_condition{
+              condition="MemoryPressure",
+              status="true"
+            } == 1
+          for: 0m
+          labels:
+            severity: critical
+            fault_type: node_memory_pressure
+          annotations:
+            summary: >-
+              Node memory pressure: {{ $labels.node }}
+            description: >-
+              Node {{ $labels.node }} is reporting MemoryPressure.
+              The kubelet is actively evicting pods to reclaim memory.
+              Immediate action required.
+
+        # 15. Node PID Pressure
+        - alert: SafeKubeNodePIDPressure
+          expr: |
+            kube_node_status_condition{
+              condition="PIDPressure",
+              status="true"
+            } == 1
+          for: 0m
+          labels:
+            severity: warning
+            fault_type: node_pid_pressure
+          annotations:
+            summary: >-
+              Node PID pressure: {{ $labels.node }}
+            description: >-
+              Node {{ $labels.node }} is reporting PIDPressure.
+              The number of running processes is approaching the OS PID limit.
+              New pods cannot be started. Investigate runaway processes.
+
+    # ────────────────────────────────────────────────────────────────
+    # GROUP 4 — Network Faults
+    # ────────────────────────────────────────────────────────────────
+    - name: safekube.network.faults
+      rules:
+
+        # 16. DNS Failure — CoreDNS has 0 available replicas
+        - alert: SafeKubeDNSFailure
+          expr: |
+            kube_deployment_status_replicas_available{
+              deployment=~"coredns|kube-dns",
+              namespace="kube-system"
+            } == 0
+          for: 0m
+          labels:
+            severity: critical
+            fault_type: dns_failure
+          annotations:
+            summary: >-
+              CoreDNS down: {{ $labels.namespace }}/{{ $labels.deployment }}
+              has 0 available replicas
+            description: >-
+              Deployment {{ $labels.deployment }} in namespace
+              {{ $labels.namespace }} has 0 available replicas.
+              All in-cluster DNS resolution is failing. Every service-to-service
+              call by hostname will fail until CoreDNS is restored.
+
+        # 17. High Network Errors — elevated receive or transmit errors
+        - alert: SafeKubeHighNetworkErrors
+          expr: |
+            (
+              rate(container_network_receive_errors_total{
+                namespace="staging"
+              }[5m])
+              +
+              rate(container_network_transmit_errors_total{
+                namespace="staging"
+              }[5m])
+            ) > 5
+          for: 2m
+          labels:
+            severity: warning
+            fault_type: high_network_errors
+          annotations:
+            summary: >-
+              High network errors: {{ $labels.namespace }}/{{ $labels.pod }}
+              (interface: {{ $labels.interface }})
+            description: >-
+              Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} is
+              experiencing {{ $value | printf "%.1f" }} network errors/sec
+              (receive + transmit combined) over the last 5 minutes.
+              Possible causes: network policy drop, MTU mismatch, or
+              bad network fabric.
+
+        # 18. Service Endpoint Missing — service has 0 ready endpoints
+        - alert: SafeKubeServiceEndpointMissing
+          expr: |
+            kube_endpoint_address_available{
+              namespace="staging"
+            } == 0
+          for: 1m
+          labels:
+            severity: warning
+            fault_type: service_endpoint_missing
+          annotations:
+            summary: >-
+              No ready endpoints: {{ $labels.namespace }}/{{ $labels.endpoint }}
+            description: >-
+              Endpoint {{ $labels.endpoint }} in namespace {{ $labels.namespace }}
+              has had 0 available (ready) addresses for more than 1 minute.
+              Traffic to this service will get no healthy backends.
+              Check the matching pods and their readiness probes.
+
+    # ────────────────────────────────────────────────────────────────
+    # GROUP 5 — Configuration Faults
+    # ────────────────────────────────────────────────────────────────
+    - name: safekube.config.faults
+      rules:
+
+        # 19. PVC Pending — PersistentVolumeClaim stuck in Pending
+        - alert: SafeKubePVCPending
+          expr: |
+            kube_persistentvolumeclaim_status_phase{
+              phase="Pending",
+              namespace="staging"
+            } == 1
+          for: 2m
+          labels:
+            severity: warning
+            fault_type: pvc_pending
+          annotations:
+            summary: >-
+              PVC stuck Pending: {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }}
+            description: >-
+              PersistentVolumeClaim {{ $labels.persistentvolumeclaim }} in
+              namespace {{ $labels.namespace }} has been in Pending state for
+              more than 2 minutes. No PersistentVolume has been bound.
+              Check StorageClass availability, PV capacity, and storage
+              provisioner logs.
+
+        # 20. Deployment Replicas Mismatch — desired != available for > 5 minutes
+        - alert: SafeKubeDeploymentReplicasMismatch
+          expr: |
+            (
+              kube_deployment_spec_replicas{namespace="staging"}
+              -
+              kube_deployment_status_replicas_available{namespace="staging"}
+            ) > 0
+          for: 5m
+          labels:
+            severity: warning
+            fault_type: deployment_replicas_mismatch
+          annotations:
+            summary: >-
+              Replicas mismatch: {{ $labels.namespace }}/{{ $labels.deployment }}
+              ({{ $value | printf "%.0f" }} replica(s) unavailable)
+            description: >-
+              Deployment {{ $labels.deployment }} in namespace
+              {{ $labels.namespace }} has had {{ $value | printf "%.0f" }}
+              unavailable replica(s) for more than 5 minutes.
+              Desired replicas do not match available replicas.
+              Check pod events and container logs for root cause.
+
+        # 21. HPA at Max Capacity — HPA current replicas equals max replicas
+        - alert: SafeKubeHPAAtMaxCapacity
+          expr: |
+            kube_horizontalpodautoscaler_status_current_replicas{
+              namespace="staging"
+            }
+            ==
+            kube_horizontalpodautoscaler_spec_max_replicas{
+              namespace="staging"
+            }
+          for: 2m
+          labels:
+            severity: warning
+            fault_type: hpa_max_capacity
+          annotations:
+            summary: >-
+              HPA at max capacity: {{ $labels.namespace }}/{{ $labels.horizontalpodautoscaler }}
+              ({{ $value | printf "%.0f" }} replicas)
+            description: >-
+              HorizontalPodAutoscaler {{ $labels.horizontalpodautoscaler }} in
+              namespace {{ $labels.namespace }} has been at its maximum replica
+              count ({{ $value | printf "%.0f" }}) for more than 2 minutes.
+              The workload cannot scale further. Consider raising maxReplicas
+              or optimising resource usage per pod.
