@@ -1,0 +1,107 @@
+# Chunk 2 — Resource/Stress Faults (8 fault types)
+# Run: python -m src.dataset_engine.scenario_runner --scenario chunk2_stress_faults.yaml
+metadata:
+  name: chunk2_stress_faults
+  description: CPU and memory stress faults
+  namespace: staging
+  collect_window_minutes: 15
+  cooldown_seconds: 20
+  runs_per_fault: 3
+  target_services:
+    - cartservice
+    - frontend
+    - checkoutservice
+    - productcatalogservice
+    - paymentservice
+
+scenarios:
+  - name: cpu_throttling
+    fault_type: cpu_throttling
+    chaos_kind: StressChaos
+    spec:
+      mode: one
+      stressors:
+        cpu:
+          workers: 2
+          load: 80
+    duration: 120s
+
+  - name: cpu_spike
+    fault_type: cpu_spike
+    chaos_kind: StressChaos
+    spec:
+      mode: one
+      stressors:
+        cpu:
+          workers: 4
+          load: 100
+    duration: 30s
+
+  - name: memory_pressure
+    fault_type: memory_pressure
+    chaos_kind: StressChaos
+    spec:
+      mode: one
+      stressors:
+        memory:
+          workers: 2
+          size: "256MB"
+    duration: 120s
+
+  - name: memory_leak_simulation
+    fault_type: memory_leak_simulation
+    chaos_kind: StressChaos
+    spec:
+      mode: one
+      stressors:
+        memory:
+          workers: 1
+          size: "50MB"
+    duration: 180s
+
+  - name: memory_oom_boundary
+    fault_type: memory_oom_boundary
+    chaos_kind: StressChaos
+    spec:
+      mode: one
+      stressors:
+        memory:
+          workers: 3
+          size: "400MB"
+    duration: 90s
+
+  - name: cpu_multi_worker_stress
+    fault_type: cpu_multi_worker_stress
+    chaos_kind: StressChaos
+    spec:
+      mode: one
+      stressors:
+        cpu:
+          workers: 8
+          load: 100
+    duration: 60s
+
+  - name: combined_cpu_memory_stress
+    fault_type: combined_cpu_memory_stress
+    chaos_kind: StressChaos
+    spec:
+      mode: one
+      stressors:
+        cpu:
+          workers: 4
+          load: 80
+        memory:
+          workers: 2
+          size: "256MB"
+    duration: 90s
+
+  - name: worker_thread_exhaustion
+    fault_type: worker_thread_exhaustion
+    chaos_kind: StressChaos
+    spec:
+      mode: one
+      stressors:
+        cpu:
+          workers: 16
+          load: 100
+    duration: 60s

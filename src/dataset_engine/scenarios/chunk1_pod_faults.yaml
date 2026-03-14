@@ -1,0 +1,92 @@
+# Chunk 1 — Pod Faults (10 fault types)
+# Run: python -m src.dataset_engine.scenario_runner --scenario chunk1_pod_faults.yaml
+metadata:
+  name: chunk1_pod_faults
+  description: Pod lifecycle faults — kill, failure, OOM, crashloop, probes, pending, eviction
+  namespace: staging
+  collect_window_minutes: 15
+  cooldown_seconds: 20
+  runs_per_fault: 3
+  target_services:
+    - cartservice
+    - frontend
+    - checkoutservice
+    - productcatalogservice
+    - paymentservice
+
+scenarios:
+  - name: pod_kill
+    fault_type: pod_kill
+    chaos_kind: PodChaos
+    spec:
+      action: pod-kill
+      mode: one
+      gracePeriod: 0
+    duration: 30s
+
+  - name: pod_failure
+    fault_type: pod_failure
+    chaos_kind: PodChaos
+    spec:
+      action: pod-failure
+      mode: one
+    duration: 60s
+
+  - name: container_kill
+    fault_type: container_kill
+    chaos_kind: PodChaos
+    spec:
+      action: container-kill
+      mode: one
+      containerNames: []
+    duration: 30s
+
+  - name: oomkilled
+    fault_type: oomkilled
+    chaos_kind: StressChaos
+    spec:
+      mode: one
+      stressors:
+        memory:
+          workers: 4
+          size: "512MB"
+    duration: 90s
+
+  - name: crashloop_backoff
+    fault_type: crashloop_backoff
+    chaos_kind: PodChaos
+    spec:
+      action: pod-failure
+      mode: one
+    duration: 120s
+
+  - name: image_pull_backoff
+    fault_type: image_pull_backoff
+    chaos_kind: k8s_api
+    duration: 60s
+
+  - name: readiness_probe_fail
+    fault_type: readiness_probe_fail
+    chaos_kind: k8s_api
+    duration: 90s
+
+  - name: liveness_probe_fail
+    fault_type: liveness_probe_fail
+    chaos_kind: k8s_api
+    duration: 90s
+
+  - name: pod_pending
+    fault_type: pod_pending
+    chaos_kind: k8s_api
+    duration: 60s
+
+  - name: pod_eviction
+    fault_type: pod_eviction
+    chaos_kind: StressChaos
+    spec:
+      mode: all
+      stressors:
+        memory:
+          workers: 2
+          size: "200MB"
+    duration: 60s

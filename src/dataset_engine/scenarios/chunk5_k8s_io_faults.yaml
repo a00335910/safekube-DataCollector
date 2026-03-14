@@ -1,0 +1,115 @@
+# Chunk 5 — TimeChaos gradual + K8s API + IOChaos (11 fault types)
+# Run: python -m src.dataset_engine.scenario_runner --scenario chunk5_k8s_io_faults.yaml
+metadata:
+  name: chunk5_k8s_io_faults
+  description: Clock skew gradual, K8s API faults, and IOChaos
+  namespace: staging
+  collect_window_minutes: 15
+  cooldown_seconds: 20
+  runs_per_fault: 3
+  target_services:
+    - cartservice
+    - frontend
+    - checkoutservice
+    - productcatalogservice
+    - paymentservice
+
+scenarios:
+  - name: clock_skew_gradual
+    fault_type: clock_skew_gradual
+    chaos_kind: TimeChaos
+    spec:
+      mode: one
+      timeOffset: "5m"
+    duration: 180s
+
+  - name: resource_quota_exceeded
+    fault_type: resource_quota_exceeded
+    chaos_kind: k8s_api
+    spec:
+      action: patch_resource_quota
+      cpu_limit: "10m"
+      memory_limit: "1Mi"
+    duration: 60s
+
+  - name: network_policy_block
+    fault_type: network_policy_block
+    chaos_kind: k8s_api
+    spec:
+      action: apply_network_policy
+      deny_ingress_from: all
+    duration: 60s
+
+  - name: missing_secret
+    fault_type: missing_secret
+    chaos_kind: k8s_api
+    spec:
+      action: delete_secret
+      secret_name: auto
+    duration: 60s
+
+  - name: missing_configmap
+    fault_type: missing_configmap
+    chaos_kind: k8s_api
+    spec:
+      action: delete_configmap
+      configmap_name: auto
+    duration: 60s
+
+  - name: hpa_max_capacity
+    fault_type: hpa_max_capacity
+    chaos_kind: k8s_api
+    spec:
+      action: patch_hpa_max_replicas
+      max_replicas: 1
+    duration: 120s
+
+  - name: misconfigured_env
+    fault_type: misconfigured_env
+    chaos_kind: k8s_api
+    spec:
+      action: patch_env_var
+      var_name: "PRODUCT_CATALOG_SERVICE_ADDR"
+      bad_value: "nonexistent-service:9999"
+    duration: 60s
+
+  - name: node_not_ready
+    fault_type: node_not_ready
+    chaos_kind: k8s_api
+    spec:
+      action: cordon_node
+    duration: 60s
+
+  - name: disk_io_latency
+    fault_type: disk_io_latency
+    chaos_kind: IOChaos
+    spec:
+      action: latency
+      mode: one
+      volumePath: /tmp
+      delay: "100ms"
+    duration: 90s
+    requires_fuse: true
+
+  - name: disk_io_error
+    fault_type: disk_io_error
+    chaos_kind: IOChaos
+    spec:
+      action: fault
+      mode: one
+      volumePath: /tmp
+      errno: 5
+    duration: 60s
+    requires_fuse: true
+
+  - name: disk_io_bandwidth_limit
+    fault_type: disk_io_bandwidth_limit
+    chaos_kind: IOChaos
+    spec:
+      action: attrOverride
+      mode: one
+      volumePath: /tmp
+      attr:
+        size: 1024
+    duration: 90s
+    requires_fuse: true

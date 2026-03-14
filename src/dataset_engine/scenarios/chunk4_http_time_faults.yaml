@@ -1,0 +1,118 @@
+# Chunk 4 — Network Corrupt + HTTP + TimeChaos (10 fault types)
+# Run: python -m src.dataset_engine.scenario_runner --scenario chunk4_http_time_faults.yaml
+metadata:
+  name: chunk4_http_time_faults
+  description: Packet corruption, HTTP faults, and time skew faults
+  namespace: staging
+  collect_window_minutes: 15
+  cooldown_seconds: 20
+  runs_per_fault: 3
+  target_services:
+    - cartservice
+    - frontend
+    - checkoutservice
+    - productcatalogservice
+    - paymentservice
+
+scenarios:
+  - name: network_packet_corrupt
+    fault_type: network_packet_corrupt
+    chaos_kind: NetworkChaos
+    spec:
+      action: corrupt
+      mode: one
+      corrupt:
+        corrupt: "5"
+        correlation: "5"
+    duration: 30s
+
+  - name: http_abort
+    fault_type: http_abort
+    chaos_kind: HTTPChaos
+    spec:
+      mode: one
+      target: Request
+      port: 8080
+      abort: true
+    duration: 60s
+
+  - name: http_delay
+    fault_type: http_delay
+    chaos_kind: HTTPChaos
+    spec:
+      mode: one
+      target: Response
+      port: 8080
+      delay: "3s"
+    duration: 120s
+
+  - name: http_error_500
+    fault_type: http_error_500
+    chaos_kind: HTTPChaos
+    spec:
+      mode: one
+      target: Response
+      port: 8080
+      replace:
+        code: 500
+    duration: 90s
+
+  - name: http_error_503
+    fault_type: http_error_503
+    chaos_kind: HTTPChaos
+    spec:
+      mode: one
+      target: Response
+      port: 8080
+      replace:
+        code: 503
+    duration: 90s
+
+  - name: http_body_corrupt
+    fault_type: http_body_corrupt
+    chaos_kind: HTTPChaos
+    spec:
+      mode: one
+      target: Response
+      port: 8080
+      patch:
+        body:
+          type: JSON
+          value: '{"error": "corrupted"}'
+    duration: 90s
+
+  - name: http_header_corrupt
+    fault_type: http_header_corrupt
+    chaos_kind: HTTPChaos
+    spec:
+      mode: one
+      target: Response
+      port: 8080
+      replace:
+        headers:
+          Content-Type: "application/broken"
+    duration: 90s
+
+  - name: clock_skew_forward
+    fault_type: clock_skew_forward
+    chaos_kind: TimeChaos
+    spec:
+      mode: one
+      timeOffset: "1h"
+    duration: 60s
+
+  - name: clock_skew_backward
+    fault_type: clock_skew_backward
+    chaos_kind: TimeChaos
+    spec:
+      mode: one
+      timeOffset: "-1h"
+    duration: 60s
+
+  - name: clock_skew_large
+    fault_type: clock_skew_large
+    chaos_kind: TimeChaos
+    spec:
+      mode: one
+      timeOffset: "24h"
+    duration: 60s

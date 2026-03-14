@@ -1,0 +1,111 @@
+# Chunk 3 — Network Faults (9 fault types)
+# Run: python -m src.dataset_engine.scenario_runner --scenario chunk3_network_faults.yaml
+metadata:
+  name: chunk3_network_faults
+  description: DNS and network latency/loss/partition faults
+  namespace: staging
+  collect_window_minutes: 15
+  cooldown_seconds: 20
+  runs_per_fault: 3
+  target_services:
+    - cartservice
+    - frontend
+    - checkoutservice
+    - productcatalogservice
+    - paymentservice
+
+scenarios:
+  - name: dns_failure
+    fault_type: dns_failure
+    chaos_kind: DNSChaos
+    spec:
+      action: error
+      mode: one
+      patterns:
+        - "*.staging.svc.cluster.local"
+    duration: 60s
+
+  - name: dns_random_response
+    fault_type: dns_random_response
+    chaos_kind: DNSChaos
+    spec:
+      action: random
+      mode: one
+    duration: 60s
+
+  - name: network_latency_low
+    fault_type: network_latency_low
+    chaos_kind: NetworkChaos
+    spec:
+      action: delay
+      mode: one
+      delay:
+        latency: "80ms"
+        jitter: "10ms"
+    duration: 120s
+
+  - name: network_latency_high
+    fault_type: network_latency_high
+    chaos_kind: NetworkChaos
+    spec:
+      action: delay
+      mode: one
+      delay:
+        latency: "800ms"
+        jitter: "100ms"
+    duration: 120s
+
+  - name: network_latency_jitter
+    fault_type: network_latency_jitter
+    chaos_kind: NetworkChaos
+    spec:
+      action: delay
+      mode: one
+      delay:
+        latency: "50ms"
+        jitter: "40ms"
+        correlation: "50"
+    duration: 120s
+
+  - name: network_packet_loss_low
+    fault_type: network_packet_loss_low
+    chaos_kind: NetworkChaos
+    spec:
+      action: loss
+      mode: one
+      loss:
+        loss: "15"
+        correlation: "25"
+    duration: 120s
+
+  - name: network_packet_loss_high
+    fault_type: network_packet_loss_high
+    chaos_kind: NetworkChaos
+    spec:
+      action: loss
+      mode: one
+      loss:
+        loss: "60"
+        correlation: "50"
+    duration: 90s
+
+  - name: network_partition
+    fault_type: network_partition
+    chaos_kind: NetworkChaos
+    spec:
+      action: partition
+      mode: one
+      direction: both
+    duration: 60s
+
+  - name: network_bandwidth_limit
+    fault_type: network_bandwidth_limit
+    chaos_kind: NetworkChaos
+    spec:
+      action: bandwidth
+      mode: one
+      bandwidth:
+        rate: "1mbps"
+        limit: 20971520
+        buffer: 10000
+    duration: 120s
